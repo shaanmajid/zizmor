@@ -16,7 +16,7 @@ on:
 permissions: {}
 
 env:
-  ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor
+  ZIZMOR_IMAGE: ghcr.io/shaanmajid/zizmor
 
 jobs:
   build:
@@ -60,7 +60,6 @@ jobs:
 
       - name: Login to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        if: github.repository_owner == 'zizmorcore'
         with:
           registry: ghcr.io
           username: "${{ github.repository_owner }}"
@@ -73,6 +72,7 @@ jobs:
           platforms: ${{ matrix.image.platform }}
           labels: ${{ steps.docker-metadata.outputs.labels }}
           outputs: type=image,"name=${{ env.ZIZMOR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+          sbom: true
           build-args: |
             ZIZMOR_VERSION=${{ github.event.inputs.version }}
 
@@ -102,7 +102,10 @@ jobs:
       name: docker
 
     permissions:
+      artifact-metadata: write # for linked artifact metadata
+      attestations: write # for attestations
       contents: read
+      id-token: write # for attestations
       packages: write
 
     steps:
@@ -115,7 +118,6 @@ jobs:
 
       - name: Login to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        if: github.repository_owner == 'zizmorcore'
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -138,20 +140,58 @@ jobs:
             type=raw,value=latest,enable=${{ github.event.inputs.latest }}
 
       - name: Create manifest list and push
+        id: create-manifest
         working-directory: ${{ runner.temp }}/digests
         # NOTE: annotation technique adapted from Ruff's build-docker.yml,
         # see: https://github.com/astral-sh/ruff/blob/6e34f74c16/.github/workflows/build-docker.yml
         run: |
-          readarray -t lines <<< "$DOCKER_METADATA_OUTPUT_ANNOTATIONS"
           annotations=()
-          for line in "${lines[@]}"; do
-            annotations+=(--annotation "$line")
+          if [[ -n "${DOCKER_METADATA_OUTPUT_ANNOTATIONS}" ]]; then
+            readarray -t lines <<< "${DOCKER_METADATA_OUTPUT_ANNOTATIONS}"
+            for line in "${lines[@]}"; do
+              annotations+=(--annotation "${line}")
+            done
+          fi
+
+          tag_args=()
+          readarray -t tags < <(jq -r '.tags[]' <<< "${DOCKER_METADATA_OUTPUT_JSON}")
+          for tag in "${tags[@]}"; do
+            tag_args+=(-t "${tag}")
+          done
+
+          shopt -s nullglob
+          digests=(*)
+          if (( ${#digests[@]} == 0 )); then
+            echo "no image digests found" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest in "${digests[@]}"; do
+            sources+=("${ZIZMOR_IMAGE}@sha256:${digest}")
           done
 
           docker buildx imagetools create \
+            --metadata-file "${RUNNER_TEMP}/image-metadata.json" \
             "${annotations[@]}" \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf "${ZIZMOR_IMAGE}@sha256:%s " *)
+            "${tag_args[@]}" \
+            "${sources[@]}"
+
+          digest="$(jq -r '."containerimage.descriptor".digest' "${RUNNER_TEMP}/image-metadata.json")"
+          if [[ -z "${digest}" || "${digest}" == "null" ]]; then
+            echo "failed to determine image digest" >&2
+            exit 1
+          fi
+
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+        shell: bash
+
+      - name: Attest Docker image
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ${{ env.ZIZMOR_IMAGE }}
+          subject-digest: ${{ steps.create-manifest.outputs.digest }}
+          push-to-registry: true
 
       - name: Inspect image
         run: |
