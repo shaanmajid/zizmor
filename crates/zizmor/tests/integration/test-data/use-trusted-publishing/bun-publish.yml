@@ -36,6 +36,29 @@ jobs:
     permissions:
       id-token: write
     steps:
-      # OK: bun publish with id-token permission (suppressed)
-      - name: safe-1
+      # NOT OK: bun publish does not support trusted publishing yet
+      - name: vulnerable-5
         run: bun publish
+
+      # OK: bunx npm publish can still use npm's trusted publishing
+      - name: safe-1
+        run: bunx npm publish
+
+  # Test cases: id-token: write + token env var (provenance + token auth)
+  bun-provenance-with-token:
+    name: bun-provenance-with-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      # NOT OK: bun publish does not support trusted publishing yet
+      - name: vulnerable-6
+        run: bun publish
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # NOT OK: bunx npm publish with id-token AND NODE_AUTH_TOKEN
+      - name: vulnerable-7
+        run: bunx npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

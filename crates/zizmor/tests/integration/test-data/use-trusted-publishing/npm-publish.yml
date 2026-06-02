@@ -111,27 +111,117 @@ jobs:
 
       # OK: npm publish with id-token permission (trusted publishing)
       - name: safe-3
-        run: npm publish --provenance
+        run: npm publish
 
-      # OK: actions/setup-node with different registry (not npmjs)
+      # OK: GitHub Packages does not support npmjs Trusted Publishing
       - name: safe-4
         uses: actions/setup-node@v4 # zizmor: ignore[unpinned-uses]
         with:
           node-version: "18"
-          registry-url: "https://npm.example.com"
+          registry-url: "https://npm.pkg.github.com"
           always-auth: true
       - name: safe-4-publish
         run: npm publish
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # OK: explicit custom publish registry is outside npmjs Trusted Publishing
+      - name: safe-5
+        run: npm publish --registry=https://npm.example.com
+        env:
           NODE_AUTH_TOKEN: ${{ secrets.CUSTOM_NPM_TOKEN }}
 
-      # OK: actions/setup-node with no registry-url specified
-      - name: safe-5
+      # OK: same-run custom registry setup is outside npmjs Trusted Publishing
+      - name: safe-6
+        run: |
+          npm config set registry http://localhost:4873
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.CUSTOM_NPM_TOKEN }}
+
+      # NOT OK: actions/setup-node with no registry-url means npmjs/default registry
+      - name: vulnerable-10
         uses: actions/setup-node@v4 # zizmor: ignore[unpinned-uses]
         with:
           node-version: "18"
           always-auth: true
-      - name: safe-5-publish
+      - name: vulnerable-10-publish
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Test cases: id-token: write + token env var
+  # These SHOULD be flagged: publish can see manual auth even though OIDC is available.
+  npm-token-auth-with-id-token:
+    name: npm-token-auth-with-id-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # NOT OK: bare npm publish with NODE_AUTH_TOKEN
+      - name: vulnerable-token-auth-1
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # NOT OK: yarn npm publish with YARN_NPM_AUTH_TOKEN
+      - name: vulnerable-token-auth-2
+        run: yarn npm publish
+        env:
+          YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # NOT OK: plain yarn publish with NODE_AUTH_TOKEN
+      - name: vulnerable-token-auth-3
+        run: yarn publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # NOT OK: npm publish with a JS registry token env, even if npm does not
+      # consume this exact variable itself
+      - name: vulnerable-token-auth-3a
+        run: npm publish --access public
+        env:
+          YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # NOT OK: inline NODE_AUTH_TOKEN assignment for npm publish
+      - name: vulnerable-token-auth-3b
+        run: NODE_AUTH_TOKEN=${{ secrets.NPM_TOKEN }} npm publish --provenance
+
+      # NOT OK: yarn publish with a JS registry token env
+      - name: vulnerable-token-auth-3c
+        run: yarn publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # OK: unrelated inline assignment should not be treated as token auth
+      - name: safe-inline-1
+        run: FOO=bar npm publish --provenance
+
+      # NOT OK: pnpm publish with NPM_TOKEN
+      - name: vulnerable-token-auth-4
+        run: pnpm publish --no-git-checks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # OK: private dependency token scoped only to install step
+      - name: safe-private-deps-install
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_READ_TOKEN }}
+      - name: safe-private-deps-publish
+        run: npm publish
+
+  # Test case: token env var set at job level
+  npm-job-level-token:
+    name: npm-job-level-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      # NOT OK: npm publish with job-level NODE_AUTH_TOKEN
+      - name: vulnerable-job-env-1
+        run: npm publish --provenance

@@ -1,0 +1,72 @@
+on: [push]
+
+name: npm-workflow-level-env-test
+
+env:
+  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+jobs:
+  # NOT OK: npm publish with workflow-level NODE_AUTH_TOKEN
+  npm-workflow-level-token:
+    name: npm-workflow-level-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: vulnerable-1
+        run: npm publish
+
+  # NOT OK: npm publish with workflow-level NODE_AUTH_TOKEN but no id-token
+  npm-no-id-token:
+    name: npm-no-id-token
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: vulnerable-2
+        run: npm publish
+
+  # NOT OK: Yarn publish with workflow-level NODE_AUTH_TOKEN and id-token
+  yarn-workflow-level-token:
+    name: yarn-workflow-level-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: vulnerable-2b
+        run: yarn npm publish
+
+  # NOT OK: npm publish with job-level YARN_NPM_AUTH_TOKEN and id-token
+  npm-job-level-yarn-token:
+    name: npm-job-level-yarn-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: vulnerable-2c
+        run: npm publish
+
+  # OK: non-JS publish with id-token should NOT be flagged despite workflow-level NODE_AUTH_TOKEN
+  non-js-with-id-token:
+    name: non-js-with-id-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      # cargo publish should be suppressed (non-JS + has id-token)
+      - name: safe-1
+        run: cargo publish
+
+  # NOT OK: bun publish should still be flagged even with id-token
+  bun-with-unrelated-workflow-token:
+    name: bun-with-unrelated-workflow-token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: vulnerable-3
+        run: bun publish
