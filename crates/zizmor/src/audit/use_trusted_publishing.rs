@@ -1,12 +1,13 @@
 use std::{sync::LazyLock, vec};
 
 use anyhow::Context as _;
+use github_actions_models::common::{Env, Uses, expr::LoE};
 use subfeature::Subfeature;
 use tree_sitter::StreamingIterator as _;
 
 use super::{Audit, AuditLoadError, audit_meta};
 use crate::audit::AuditError;
-use crate::finding::location::Locatable as _;
+use crate::finding::location::{Locatable as _, SymbolicLocation};
 use crate::{
     finding::{Confidence, Finding, Severity},
     models::{
@@ -30,6 +31,29 @@ const KNOWN_PYTHON_TP_INDICES: &[&str] = &[
 
 const KNOWN_NPMJS_TP_INDICES: &[&str] =
     &["https://registry.npmjs.org", "https://registry.npmjs.org/"];
+
+/// Environment variables npm-family tools read for token authentication. Their
+/// presence in an `env` block is a manual credential, i.e. not Trusted Publishing.
+const NPM_TOKEN_AUTH_ENV_VARS: &[&str] = &["NODE_AUTH_TOKEN", "NPM_TOKEN", "YARN_NPM_AUTH_TOKEN"];
+
+/// How a `run:` publish command relates to npm Trusted Publishing, which only
+/// covers npmjs.org.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublishCommandKind {
+    /// A non-npm publish (cargo, twine, gem, …); `id-token: write` is taken as
+    /// evidence of Trusted Publishing.
+    Other,
+    /// `npm`/`yarn`/`pnpm`/`bunx npm`, which can use npmjs Trusted Publishing.
+    /// Under `id-token: write` these are flagged only when a manual token remains.
+    NpmFamily,
+    /// `bun publish`. Bun has no Trusted Publishing support, so it's always flagged.
+    Bun,
+}
+
+struct PublishCommandCandidate<'doc> {
+    command: Subfeature<'doc>,
+    kind: PublishCommandKind,
+}
 
 #[allow(clippy::unwrap_used)]
 static KNOWN_TRUSTED_PUBLISHING_ACTIONS: LazyLock<Vec<(ActionCoordinate, &[&str])>> =
@@ -300,6 +324,145 @@ impl UseTrustedPublishing {
         }
     }
 
+    /// Classify a command already recognized by [`Self::is_publish_command`] by
+    /// its Trusted Publishing regime. `bunx` only matches as `bunx npm publish`,
+    /// so it belongs to the npm family.
+    fn publish_command_kind(cmd: &str) -> PublishCommandKind {
+        match cmd {
+            "npm" | "yarn" | "pnpm" | "bunx" => PublishCommandKind::NpmFamily,
+            "bun" => PublishCommandKind::Bun,
+            _ => PublishCommandKind::Other,
+        }
+    }
+
+    /// Whether `raw` is a statically-readable registry URL other than npmjs.org.
+    /// An empty or expression-templated value isn't readable, so it isn't treated
+    /// as non-npmjs: we still flag, assuming the npmjs default.
+    fn is_non_npmjs_registry(raw: &str) -> bool {
+        let registry = raw.trim().trim_matches(['"', '\'']);
+        !registry.is_empty()
+            && !registry.contains('$')
+            && !KNOWN_NPMJS_TP_INDICES.contains(&registry)
+    }
+
+    /// Whether the most recent `actions/setup-node` before this step points at a
+    /// non-npmjs registry. npmjs Trusted Publishing only covers npmjs.org, so a
+    /// non-npmjs target suppresses the npm-family finding. The last `setup-node`
+    /// wins; one without a readable `registry-url` leaves no signal.
+    fn prior_setup_node_targets_non_npmjs(step: &crate::models::workflow::Step<'_>) -> bool {
+        let mut non_npmjs = false;
+
+        for prior in step
+            .parent
+            .steps()
+            .take_while(|prior| prior.index < step.index)
+        {
+            let StepBodyCommon::Uses {
+                uses: Uses::Repository(uses),
+                with,
+            } = prior.body()
+            else {
+                continue;
+            };
+
+            if !uses.owner().eq_ignore_ascii_case("actions")
+                || !uses.repo().eq_ignore_ascii_case("setup-node")
+            {
+                continue;
+            }
+
+            non_npmjs = match with {
+                LoE::Literal(with) => with
+                    .get("registry-url")
+                    .is_some_and(|registry| Self::is_non_npmjs_registry(&registry.to_string())),
+                _ => false,
+            };
+        }
+
+        non_npmjs
+    }
+
+    /// Locate an npm token-auth variable inherited from the step, job, or
+    /// workflow `env` block (most specific scope wins).
+    fn token_env_location<'doc>(
+        step: &crate::models::workflow::Step<'doc>,
+    ) -> Option<SymbolicLocation<'doc>> {
+        Self::env_token_location(&step.env, step.location())
+            .or_else(|| Self::env_token_location(&step.parent.env, step.job().location()))
+            .or_else(|| Self::env_token_location(&step.workflow().env, step.workflow().location()))
+    }
+
+    /// If `env` literally sets one of the npm token-auth variables, point at it
+    /// under `base`.
+    fn env_token_location<'doc>(
+        env: &LoE<Env>,
+        base: SymbolicLocation<'doc>,
+    ) -> Option<SymbolicLocation<'doc>> {
+        let LoE::Literal(env) = env else {
+            return None;
+        };
+
+        let var = NPM_TOKEN_AUTH_ENV_VARS
+            .iter()
+            .find(|var| env.contains_key(**var))?;
+
+        Some(
+            base.with_keys(["env".into(), (*var).into()])
+                .annotated(USES_MANUAL_CREDENTIAL),
+        )
+    }
+
+    /// Build a `run:` publish finding, optionally annotating the manual credential.
+    fn publish_command_finding<'doc>(
+        step: &impl StepCommon<'doc>,
+        command: Subfeature<'doc>,
+        credential_location: Option<SymbolicLocation<'doc>>,
+    ) -> Result<Finding<'doc>, AuditError> {
+        let mut finding = Self::finding()
+            .severity(Severity::Informational)
+            .confidence(Confidence::High)
+            .add_location(step.location().hidden())
+            .add_location(
+                step.location()
+                    .with_keys(["run".into()])
+                    .key_only()
+                    .annotated("this step"),
+            )
+            .add_location(
+                step.location()
+                    .primary()
+                    .with_keys(["run".into()])
+                    .subfeature(command)
+                    .annotated("this command"),
+            );
+
+        if let Some(credential_location) = credential_location {
+            finding = finding.add_location(credential_location);
+        }
+
+        finding.build(step)
+    }
+
+    /// Build a finding for an npm-family publish running under `id-token: write`.
+    /// We suppress when a prior `actions/setup-node` targets a non-npmjs registry
+    /// (Trusted Publishing can't apply there); otherwise we flag only when a
+    /// manual token credential is visible to the publish.
+    fn npm_publish_finding<'doc>(
+        step: &crate::models::workflow::Step<'doc>,
+        command: Subfeature<'doc>,
+        setup_node_non_npmjs: bool,
+    ) -> Result<Option<Finding<'doc>>, AuditError> {
+        if setup_node_non_npmjs {
+            return Ok(None);
+        }
+
+        let Some(credential) = Self::token_env_location(step) else {
+            return Ok(None);
+        };
+
+        Self::publish_command_finding(step, command, Some(credential)).map(Some)
+    }
+
     fn process_step<'doc>(
         &self,
         step: &impl StepCommon<'doc>,
@@ -339,7 +502,7 @@ impl UseTrustedPublishing {
         &self,
         run: &'doc str,
         shell: &str,
-    ) -> Result<Vec<Subfeature<'doc>>, AuditError> {
+    ) -> Result<Vec<PublishCommandCandidate<'doc>>, AuditError> {
         let normalized = utils::normalize_shell(shell);
 
         let mut cursor = tree_sitter::QueryCursor::new();
@@ -376,7 +539,7 @@ impl UseTrustedPublishing {
             .capture_index_for_name("args")
             .expect("internal error: missing capture index for 'args'");
 
-        let mut subfeatures = vec![];
+        let mut candidates = vec![];
         matches.for_each(|mat| {
             let cmd = {
                 let cap = mat
@@ -411,11 +574,14 @@ impl UseTrustedPublishing {
                     .utf8_text(run.as_bytes())
                     .expect("impossible: capture should be UTF-8 by construction");
 
-                subfeatures.push(Subfeature::new(span.node.start_byte(), span_contents));
+                candidates.push(PublishCommandCandidate {
+                    command: Subfeature::new(span.node.start_byte(), span_contents),
+                    kind: Self::publish_command_kind(cmd),
+                });
             }
         });
 
-        Ok(subfeatures)
+        Ok(candidates)
     }
 }
 
@@ -448,9 +614,7 @@ impl Audit for UseTrustedPublishing {
         // a strict filter. This ended up being overly imprecise, since a lot
         // of publishing commands use trusted publishing implicitly if
         // the environment supports it. We reverted this with #1191.
-        if let StepBodyCommon::Run { run, .. } = step.body()
-            && !step.parent.has_id_token()
-        {
+        if let StepBodyCommon::Run { run, .. } = step.body() {
             let shell = step.shell().map(|s| s.0).unwrap_or_else(|| {
                 tracing::debug!(
                     "use-trusted-publishing: couldn't determine shell type for {workflow}:{job} step {stepno}",
@@ -462,27 +626,42 @@ impl Audit for UseTrustedPublishing {
                 "bash"
             });
 
-            for subfeature in self.trusted_publishing_command_candidates(run, shell)? {
-                findings.push(
-                    Self::finding()
-                        .severity(Severity::Informational)
-                        .confidence(Confidence::High)
-                        .add_location(step.location().hidden())
-                        .add_location(
-                            step.location()
-                                .with_keys(["run".into()])
-                                .key_only()
-                                .annotated("this step"),
-                        )
-                        .add_location(
-                            step.location()
-                                .primary()
-                                .with_keys(["run".into()])
-                                .subfeature(subfeature)
-                                .annotated("this command"),
-                        )
-                        .build(step)?,
-                );
+            let candidates = self.trusted_publishing_command_candidates(run, shell)?;
+
+            if !step.parent.has_id_token() {
+                // No `id-token: write`: every publish command is a finding.
+                for candidate in candidates {
+                    findings.push(Self::publish_command_finding(
+                        step,
+                        candidate.command,
+                        None,
+                    )?);
+                }
+            } else {
+                // `id-token: write` is present. For most ecosystems this is
+                // sufficient evidence of Trusted Publishing, so those publishes
+                // are skipped. npm-family publishes are the exception: the
+                // permission is commonly present only for `--provenance` while
+                // the publish still authenticates with a manual token (e.g.
+                // NODE_AUTH_TOKEN), so we flag those (#1848). `bun publish` is
+                // always flagged, since Bun has no Trusted Publishing support.
+                let setup_node_non_npmjs = Self::prior_setup_node_targets_non_npmjs(step);
+                for candidate in candidates {
+                    let finding = match candidate.kind {
+                        PublishCommandKind::Other => None,
+                        PublishCommandKind::Bun => Some(Self::publish_command_finding(
+                            step,
+                            candidate.command,
+                            None,
+                        )?),
+                        PublishCommandKind::NpmFamily => Self::npm_publish_finding(
+                            step,
+                            candidate.command,
+                            setup_node_non_npmjs,
+                        )?,
+                    };
+                    findings.extend(finding);
+                }
             }
         }
 
@@ -569,6 +748,28 @@ mod tests {
                 super::UseTrustedPublishing::is_publish_command(cmd, args_iter),
                 *is_publish_command,
                 "cmd: {cmd:?}, args: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_publish_command_kind() {
+        use super::PublishCommandKind::{Bun, NpmFamily, Other};
+        use super::UseTrustedPublishing;
+
+        for (cmd, expected) in &[
+            ("npm", NpmFamily),
+            ("yarn", NpmFamily),
+            ("pnpm", NpmFamily),
+            ("bunx", NpmFamily),
+            ("bun", Bun),
+            ("cargo", Other),
+            ("twine", Other),
+        ] {
+            assert_eq!(
+                UseTrustedPublishing::publish_command_kind(cmd),
+                *expected,
+                "cmd: {cmd:?}"
             );
         }
     }

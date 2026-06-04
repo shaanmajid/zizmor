@@ -1,0 +1,45 @@
+on: [push]
+
+name: npm-publish-token-auth
+
+# A manual npm token can reach the publish through step, job, or workflow `env`.
+# Under `id-token: write` (commonly set for `--provenance`) that token, not
+# Trusted Publishing, authenticates the publish — so it's still flagged (#1848).
+env:
+  # workflow scope, inherited by jobs that don't set their own token
+  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+jobs:
+  # token inherited from the workflow scope
+  workflow-token:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: pnpm-workflow-token
+        run: pnpm publish
+
+  # token set on the job, inherited by its steps
+  job-token:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: yarn-job-token
+        run: yarn npm publish
+
+  # token set on the step itself (most specific scope)
+  step-token:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: yarn-step-token
+        run: yarn publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -2541,6 +2541,13 @@ Other resources:
 * [Trusted Publishers for All Package Repositories]
 * [Trusted publishing: a new benchmark for packaging security]
 
+For npm-family publishes (`npm`, `pnpm`, `yarn`, and `bunx npm`), `id-token:
+write` alone is **not** treated as Trusted Publishing: the permission is commonly
+added only for [provenance] while the publish still authenticates with a
+manually-configured token (e.g. `NODE_AUTH_TOKEN`), so `zizmor` flags the publish
+whenever such a token is in scope. `bun publish` is always flagged, since Bun has
+no Trusted Publishing support.
+
 ### Remediation
 
 In general, enabling Trusted Publishing requires a one-time change to your
@@ -2610,6 +2617,7 @@ once it's configured:
 [Trusted Publishing - crates.io]: https://crates.io/docs/trusted-publishing
 [Automated publishing of packages to pub.dev]: https://dart.dev/tools/pub/automated-publishing
 [Trusted publishing for npm packages]: https://docs.npmjs.com/trusted-publishers
+[provenance]: https://docs.npmjs.com/generating-provenance-statements
 [Trusted publishing for nuget.org]: https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing
 [Trusted publishing: a new benchmark for packaging security]: https://blog.trailofbits.com/2023/05/23/trusted-publishing-a-new-benchmark-for-packaging-security/
 [Trusted Publishers for All Package Repositories]: https://repos.openssf.org/trusted-publishers-for-all-package-repositories.html

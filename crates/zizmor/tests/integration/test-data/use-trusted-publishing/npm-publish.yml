@@ -83,7 +83,7 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # Test cases that should NOT be flagged (safe)
+  # Cases under id-token: safe unless a manual npm token remains (see #1848).
   npm-trusted-publishing:
     name: npm-trusted-publishing
     runs-on: ubuntu-latest
@@ -125,13 +125,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.CUSTOM_NPM_TOKEN }}
 
-      # OK: actions/setup-node with no registry-url specified
-      - name: safe-5
+      # NOT OK (#1848): setup-node defaults to npmjs, and the publish still uses
+      # a manual NODE_AUTH_TOKEN, so id-token alone isn't Trusted Publishing.
+      - name: vulnerable-10
         uses: actions/setup-node@v4 # zizmor: ignore[unpinned-uses]
         with:
           node-version: "18"
           always-auth: true
-      - name: safe-5-publish
+      - name: vulnerable-10-publish
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

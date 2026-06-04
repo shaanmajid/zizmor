@@ -216,7 +216,7 @@ fn test_npm_publish() -> Result<()> {
         zizmor()
             .input(input_under_test("use-trusted-publishing/npm-publish.yml"))
             .run()?,
-        @"
+        @r"
     info[use-trusted-publishing]: prefer trusted publishing for authentication
       --> @@INPUT@@:15:9
        |
@@ -331,17 +331,30 @@ fn test_npm_publish() -> Result<()> {
        = note: audit confidence → High
 
     info[use-trusted-publishing]: prefer trusted publishing for authentication
-       --> @@INPUT@@:130:9
+       --> @@INPUT@@:131:9
         |
-    130 |         uses: actions/setup-node@v4 # zizmor: ignore[unpinned-uses]
+    131 |         uses: actions/setup-node@v4 # zizmor: ignore[unpinned-uses]
         |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this step
     ...
-    133 |           always-auth: true
+    134 |           always-auth: true
         |           ^^^^^^^^^^^^^^^^^ uses a manually-configured credential instead of Trusted Publishing
         |
         = note: audit confidence → High
 
-    29 findings (6 ignored, 11 suppressed): 12 informational, 0 low, 0 medium, 0 high
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+       --> @@INPUT@@:136:14
+        |
+    136 |         run: npm publish
+        |         ---  ^^^^^^^^^^^ this command
+        |         |
+        |         this step
+    137 |         env:
+    138 |           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        |           ----------------------------------------- uses a manually-configured credential instead of Trusted Publishing
+        |
+        = note: audit confidence → High
+
+    30 findings (6 ignored, 11 suppressed): 13 informational, 0 low, 0 medium, 0 high
     "
     );
 
@@ -560,7 +573,85 @@ fn test_bun_publish() -> Result<()> {
        |
        = note: audit confidence → High
 
-    7 findings (3 suppressed): 4 informational, 0 low, 0 medium, 0 high
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+      --> @@INPUT@@:43:14
+       |
+    43 |         run: bun publish
+       |         ---  ^^^^^^^^^^^ this command
+       |         |
+       |         this step
+       |
+       = note: audit confidence → High
+
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+      --> @@INPUT@@:50:14
+       |
+    50 |         run: bunx npm publish
+       |         ---  ^^^^^^^^^^^^^^^^ this command
+       |         |
+       |         this step
+    51 |         env:
+    52 |           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+       |           ----------------------------------------- uses a manually-configured credential instead of Trusted Publishing
+       |
+       = note: audit confidence → High
+
+    10 findings (4 suppressed): 6 informational, 0 low, 0 medium, 0 high
+    "
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_npm_publish_token_auth() -> Result<()> {
+    insta::assert_snapshot!(
+        zizmor()
+            .input(input_under_test(
+                "use-trusted-publishing/npm-publish-token-auth.yml"
+            ))
+            .run()?,
+        @r"
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+      --> @@INPUT@@:21:14
+       |
+    10 |   NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+       |   ----------------------------------- uses a manually-configured credential instead of Trusted Publishing
+    ...
+    21 |         run: pnpm publish
+       |         ---  ^^^^^^^^^^^^ this command
+       |         |
+       |         this step
+       |
+       = note: audit confidence → High
+
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+      --> @@INPUT@@:33:14
+       |
+    30 |       YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+       |       --------------------------------------------- uses a manually-configured credential instead of Trusted Publishing
+    ...
+    33 |         run: yarn npm publish
+       |         ---  ^^^^^^^^^^^^^^^^ this command
+       |         |
+       |         this step
+       |
+       = note: audit confidence → High
+
+    info[use-trusted-publishing]: prefer trusted publishing for authentication
+      --> @@INPUT@@:43:14
+       |
+    43 |         run: yarn publish
+       |         ---  ^^^^^^^^^^^^ this command
+       |         |
+       |         this step
+    44 |         env:
+    45 |           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+       |           ----------------------------------------- uses a manually-configured credential instead of Trusted Publishing
+       |
+       = note: audit confidence → High
+
+    13 findings (10 suppressed): 3 informational, 0 low, 0 medium, 0 high
     "
     );
 

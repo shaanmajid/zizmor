@@ -30,12 +30,23 @@ jobs:
       - name: not-vulnerable-1
         run: bun publish --dry-run
 
-  true-negatives:
-    name: true-negatives
+  # Under id-token, `bun publish` is still flagged: Bun has no Trusted
+  # Publishing support. `bunx npm publish` delegates to npm, so it's flagged
+  # only when a manual token is present.
+  id-token:
+    name: id-token
     runs-on: ubuntu-latest
     permissions:
       id-token: write
     steps:
-      # OK: bun publish with id-token permission (suppressed)
-      - name: safe-1
+      - name: vulnerable-5
         run: bun publish
+
+      # OK: bunx npm publish can use Trusted Publishing (no manual token)
+      - name: not-vulnerable-2
+        run: bunx npm publish
+
+      - name: vulnerable-6
+        run: bunx npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
