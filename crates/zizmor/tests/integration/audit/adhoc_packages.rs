@@ -230,7 +230,47 @@ fn test_adhoc_packages() -> anyhow::Result<()> {
         |
         = note: audit confidence → High
 
-    22 findings: 0 informational, 22 low, 0 medium, 0 high
+    help[adhoc-packages]: ad-hoc installation of packages
+       --> @@INPUT@@:165:14
+        |
+    165 |         run: uvx ruff
+        |         ---  ^^^^^^^^ installs a package outside of a lockfile
+        |         |
+        |         this step
+        |
+        = note: audit confidence → High
+
+    help[adhoc-packages]: ad-hoc installation of packages
+       --> @@INPUT@@:169:14
+        |
+    169 |         run: uvx --from mypy dmypy
+        |         ---  ^^^^^^^^^^^^^^^^^^^^^ installs a package outside of a lockfile
+        |         |
+        |         this step
+        |
+        = note: audit confidence → High
+
+    help[adhoc-packages]: ad-hoc installation of packages
+       --> @@INPUT@@:173:14
+        |
+    173 |         run: uv tool run ruff
+        |         ---  ^^^^^^^^^^^^^^^^ installs a package outside of a lockfile
+        |         |
+        |         this step
+        |
+        = note: audit confidence → High
+
+    help[adhoc-packages]: ad-hoc installation of packages
+       --> @@INPUT@@:177:14
+        |
+    177 |         run: uv tool install ruff
+        |         ---  ^^^^^^^^^^^^^^^^^^^^ installs a package outside of a lockfile
+        |         |
+        |         this step
+        |
+        = note: audit confidence → High
+
+    26 findings: 0 informational, 26 low, 0 medium, 0 high
     "#
     );
 

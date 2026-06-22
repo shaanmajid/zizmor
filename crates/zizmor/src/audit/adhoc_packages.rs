@@ -29,6 +29,200 @@ audit_meta!(
 );
 
 impl AdhocPackages {
+    fn is_local_requirement(req: &str) -> bool {
+        let req = req.trim_matches(|ch| matches!(ch, '\'' | '"' | '`'));
+        let is_remote_url = req.contains("://") || req.starts_with("git+");
+
+        req == "."
+            || req == ".."
+            || req.starts_with("./")
+            || req.starts_with("../")
+            || req.starts_with(".\\")
+            || req.starts_with("..\\")
+            || req.starts_with('/')
+            || req.starts_with("~/")
+            || req.starts_with("file:")
+            || (!is_remote_url && (req.contains('/') || req.contains('\\')))
+    }
+
+    fn is_python_tool(tool: &str) -> bool {
+        let tool = tool
+            .trim_matches(|ch| matches!(ch, '\'' | '"' | '`'))
+            .to_ascii_lowercase();
+        let tool = tool.split_once('@').map_or(tool.as_str(), |(name, _)| name);
+
+        ["python", "pythonw", "cpython", "pypy", "graalpy", "pyodide"]
+            .iter()
+            .any(|prefix| {
+                tool == *prefix
+                    || tool.strip_prefix(prefix).is_some_and(|suffix| {
+                        !suffix.is_empty()
+                            && suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+                    })
+            })
+    }
+
+    fn is_package_operand(arg: &str) -> bool {
+        !arg.starts_with('-') && !Self::is_local_requirement(arg)
+    }
+
+    fn option_value_at<'a>(
+        args: &[&'a str],
+        idx: usize,
+        value_options: &[&str],
+    ) -> Option<(Option<&'a str>, usize)> {
+        let arg = args[idx];
+
+        if let Some((option, value)) = arg.split_once('=')
+            && value_options.contains(&option)
+        {
+            return Some((Some(value), idx + 1));
+        }
+
+        if let Some(option) = value_options
+            .iter()
+            .find(|option| option.len() == 2 && arg.starts_with(**option) && arg.len() > 2)
+        {
+            return Some((Some(&arg[option.len()..]), idx + 1));
+        }
+
+        if value_options.contains(&arg) {
+            return Some((args.get(idx + 1).copied(), idx + 2));
+        }
+
+        None
+    }
+
+    fn skip_value_option(args: &[&str], idx: usize, value_options: &[&str]) -> Option<usize> {
+        Self::option_value_at(args, idx, value_options).map(|(_, next_idx)| next_idx)
+    }
+
+    fn first_nonflag_operand<'a>(
+        args: &[&'a str],
+        value_options: &[&str],
+    ) -> Option<(usize, &'a str)> {
+        let mut idx = 0;
+
+        while idx < args.len() {
+            let arg = args[idx];
+
+            if arg == "--" {
+                idx += 1;
+                continue;
+            }
+
+            if let Some(next_idx) = Self::skip_value_option(args, idx, value_options) {
+                idx = next_idx;
+                continue;
+            }
+
+            if arg.starts_with('-') {
+                idx += 1;
+                continue;
+            }
+
+            return Some((idx, arg));
+        }
+
+        None
+    }
+
+    fn is_uv_tool_adhoc(args: &[&str], recognize_from: bool) -> bool {
+        let value_options = [
+            "-p",
+            "--python",
+            "--with-requirements",
+            "-c",
+            "--constraints",
+            "-b",
+            "--build-constraints",
+            "--overrides",
+            "--env-file",
+        ];
+        let package_value_options = ["-w", "--with", "--with-editable"];
+
+        let mut idx = 0;
+        let mut package_option = false;
+        let mut from_seen = false;
+
+        while idx < args.len() {
+            let arg = args[idx];
+
+            if recognize_from
+                && let Some((value, next_idx)) = Self::option_value_at(args, idx, &["--from"])
+            {
+                from_seen = true;
+                package_option |= value
+                    .is_some_and(|req| Self::is_package_operand(req) && !Self::is_python_tool(req));
+                idx = next_idx;
+                continue;
+            }
+
+            if let Some((value, next_idx)) =
+                Self::option_value_at(args, idx, &package_value_options)
+            {
+                package_option |= value.is_some_and(Self::is_package_operand);
+                idx = next_idx;
+                continue;
+            }
+
+            if arg == "--" {
+                idx += 1;
+                continue;
+            }
+
+            if let Some(next_idx) = Self::skip_value_option(args, idx, &value_options) {
+                idx = next_idx;
+                continue;
+            }
+
+            if arg.starts_with('-') {
+                idx += 1;
+                continue;
+            }
+
+            return package_option
+                || (!from_seen && Self::is_package_operand(arg) && !Self::is_python_tool(arg));
+        }
+
+        false
+    }
+
+    fn is_uv_adhoc(args: &[&str]) -> bool {
+        let uv_global_value_options = [
+            "--color",
+            "--directory",
+            "--project",
+            "--config-file",
+            "--cache-dir",
+            "--python-preference",
+        ];
+        let Some((subcommand_idx, subcommand)) =
+            Self::first_nonflag_operand(args, &uv_global_value_options)
+        else {
+            return false;
+        };
+
+        if subcommand != "tool" {
+            return false;
+        }
+
+        let tool_args = &args[subcommand_idx + 1..];
+        let tool_value_options = ["--python-preference"];
+        let Some((tool_subcommand_idx, tool_subcommand)) =
+            Self::first_nonflag_operand(tool_args, &tool_value_options)
+        else {
+            return false;
+        };
+        let tool_subcommand_args = &tool_args[tool_subcommand_idx + 1..];
+
+        match tool_subcommand {
+            "run" => Self::is_uv_tool_adhoc(tool_subcommand_args, true),
+            "install" => Self::is_uv_tool_adhoc(tool_subcommand_args, false),
+            _ => false,
+        }
+    }
+
     fn query<'a>(
         &self,
         query: &'a utils::SpannedQuery,
@@ -69,6 +263,8 @@ impl AdhocPackages {
                     _ => false,
                 }
             }
+            "uvx" => Self::is_uv_tool_adhoc(&args.collect::<Vec<_>>(), true),
+            "uv" => Self::is_uv_adhoc(&args.collect::<Vec<_>>()),
             _ => false,
         }
     }
@@ -281,6 +477,67 @@ mod tests {
             (&["npx", "-y", "foobar"][..], false),
             (&["npx", "--yes", "foobar"][..], false),
             (&["npx", "foobar@1.2.3"][..], false),
+            // `uvx` and `uv tool run` install/run ad-hoc tools.
+            (&["uvx", "ruff"][..], true),
+            (&["uvx", "ruff@0.15.0"][..], true),
+            (&["uvx", "--from", "mypy", "dmypy"][..], true),
+            (&["uvx", "--from=mypy", "dmypy"][..], true),
+            (&["uvx", "--from", "mypy", "python"][..], true),
+            (&["uvx", "--python", "3.12", "ruff"][..], true),
+            (&["uvx", "--with", "requests", "ruff"][..], true),
+            (&["uvx", "--with", "./plugin", "ruff"][..], true),
+            (&["uvx", "--with", "requests", "python"][..], true),
+            (&["uvx", "--from", "mypy"][..], false),
+            (&["uvx", "--from", "./tools/mypy", "dmypy"][..], false),
+            (&["uvx", "--from", "python@3.12", "python"][..], false),
+            (&["uvx", "--python", "3.12"][..], false),
+            (&["uvx", "--with", "./plugin", "python"][..], false),
+            (&["uvx", "python"][..], false),
+            (&["uvx", "python@3.12"][..], false),
+            (&["uvx", "python311"][..], false),
+            (&["uvx", "cpython311"][..], false),
+            (&["uvx", "./tools/ruff"][..], false),
+            (&["uv", "tool", "run", "ruff"][..], true),
+            (&["uv", "tool", "run", "ruff@0.15.0"][..], true),
+            (&["uv", "tool", "run", "--from", "mypy", "dmypy"][..], true),
+            (&["uv", "tool", "run", "--python", "3.12", "ruff"][..], true),
+            (
+                &["uv", "tool", "run", "--with", "./plugin", "ruff"][..],
+                true,
+            ),
+            (&["uv", "tool", "run", "--python", "3.12"][..], false),
+            (&["uv", "tool", "run", "python"][..], false),
+            // `uv tool install` installs an ad-hoc tool package.
+            (&["uv", "tool", "install", "ruff"][..], true),
+            (&["uv", "tool", "install", "ruff@0.15.0"][..], true),
+            (
+                &["uv", "tool", "install", "--python", "3.12", "ruff"][..],
+                true,
+            ),
+            (
+                &["uv", "tool", "install", "--with", "requests", "ruff"][..],
+                true,
+            ),
+            (
+                &["uv", "tool", "install", "--with", "./plugin", "ruff"][..],
+                true,
+            ),
+            (
+                &["uv", "tool", "install", "--editable", "./tools/cli"][..],
+                false,
+            ),
+            (
+                &[
+                    "uv",
+                    "tool",
+                    "install",
+                    "--editable",
+                    "git+https://example.invalid/tool.git",
+                ][..],
+                true,
+            ),
+            (&["uv", "tool", "install", "packages/foo"][..], false),
+            (&["uv", "tool", "list"][..], false),
             // TODO: flip to `true` once `pip install` is covered.
             (&["pip", "install", "requests"][..], false),
             // In the future we should consider catching wrapped commands, those using `sudo` and so on.

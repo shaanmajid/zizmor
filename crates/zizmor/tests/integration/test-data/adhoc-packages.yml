@@ -155,3 +155,39 @@ jobs:
       # OK: `bundle install` is fine and lockfile-respecting.
       - name: not-vulnerable-pwsh-3
         run: bundle install
+
+  vulnerable-uv:
+    name: vulnerable-uv
+    runs-on: ubuntu-latest
+    steps:
+      # NOT OK: `uvx` installs/runs an ad-hoc tool.
+      - name: vulnerable-uv-1
+        run: uvx ruff
+
+      # NOT OK: `uvx --from` installs/runs from an ad-hoc package.
+      - name: vulnerable-uv-2
+        run: uvx --from mypy dmypy
+
+      # NOT OK: `uv tool run` installs/runs an ad-hoc tool.
+      - name: vulnerable-uv-3
+        run: uv tool run ruff
+
+      # NOT OK: `uv tool install` installs an ad-hoc tool.
+      - name: vulnerable-uv-4
+        run: uv tool install ruff
+
+  not-vulnerable-uv:
+    name: not-vulnerable-uv
+    runs-on: ubuntu-latest
+    steps:
+      # OK: Python runtime management shapes are deferred.
+      - name: not-vulnerable-uv-1
+        run: uvx python
+
+      # OK: local `--from` packages are deferred.
+      - name: not-vulnerable-uv-2
+        run: uvx --from ./tools/mypy dmypy
+
+      # OK: local tool packages are deferred.
+      - name: not-vulnerable-uv-3
+        run: uv tool install ./tools/cli

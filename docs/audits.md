@@ -25,8 +25,8 @@ Legend:
 Detects `#!yaml run:` steps that install packages in an ad-hoc manner, i.e. outside of a managed
 and locked manifest.
 
-Installing packages directly with commands like `#!bash gem install <pkg>` or
-`#!bash npm install <pkg>` represents a potential risk:
+Installing packages directly with commands like `#!bash gem install <pkg>`,
+`#!bash npm install <pkg>`, or `#!bash uvx <tool>` represents a potential risk:
 
 - Packages that are installed in an ad-hoc manner are often not pinned to
   a specific version, meaning that the installer will often use whatever latest
@@ -43,6 +43,7 @@ This audit currently detects ad-hoc installation patterns for the following ecos
 | Ecosystem | Tools |
 |-----------|-------|
 | JavaScript | `npm` |
+| Python | `uv`, `uvx` |
 | Ruby | `gem` |
 
 ### Remediation
