@@ -3,7 +3,7 @@
 use std::{
     collections::HashSet,
     env, fmt,
-    io::{Write, stdout},
+    io::{BufWriter, Write, stdout},
     process::ExitCode,
 };
 
@@ -739,6 +739,18 @@ fn completions<G: clap_complete::Generator>(generator: G, cmd: &mut clap::Comman
     );
 }
 
+fn with_buffered_stdout(
+    f: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let stdout = stdout();
+    let mut stdout = BufWriter::new(stdout.lock());
+
+    f(&mut stdout)?;
+    stdout.flush()?;
+
+    Ok(())
+}
+
 /// Top-level errors.
 #[derive(Debug, Error)]
 enum Error {
@@ -1035,14 +1047,17 @@ async fn run(app: &mut App) -> Result<ExitCode, Error> {
             app.output.naches,
         ),
         OutputFormat::Json | OutputFormat::JsonV1 => {
-            output::json::v1::output(stdout(), results.findings()).map_err(Error::Output)?
+            with_buffered_stdout(|stdout| output::json::v1::output(stdout, results.findings()))
+                .map_err(Error::Output)?
         }
-        OutputFormat::Sarif => {
-            serde_json::to_writer_pretty(stdout(), &output::sarif::build(results.findings()))
-                .map_err(|err| Error::Output(anyhow!(err)))?
-        }
+        OutputFormat::Sarif => with_buffered_stdout(|stdout| {
+            serde_json::to_writer_pretty(stdout, &output::sarif::build(results.findings()))
+                .map_err(anyhow::Error::from)
+        })
+        .map_err(Error::Output)?,
         OutputFormat::Github => {
-            output::github::output(stdout(), results.findings()).map_err(Error::Output)?
+            with_buffered_stdout(|stdout| output::github::output(stdout, results.findings()))
+                .map_err(Error::Output)?
         }
     };
 
