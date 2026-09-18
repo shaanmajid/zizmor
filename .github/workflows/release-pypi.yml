@@ -17,6 +17,8 @@ jobs:
   linux:
     name: Build Linux wheels (manylinux)
     runs-on: ${{ matrix.platform.runner }}
+    env:
+      CARGO: ${{ github.workspace }}/support/cargo-auditable.sh
     strategy:
       matrix:
         platform:
@@ -48,6 +50,8 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --manifest-path crates/zizmor/Cargo.toml
           manylinux: ${{ matrix.platform.manylinux }}
+          docker-options: -e CARGO
+          before-script-linux: support/install-cargo-auditable.sh
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -57,6 +61,8 @@ jobs:
   musllinux:
     name: Build Linux wheels (musllinux)
     runs-on: ${{ matrix.platform.runner }}
+    env:
+      CARGO: ${{ github.workspace }}/support/cargo-auditable.sh
     strategy:
       matrix:
         platform:
@@ -78,6 +84,8 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --manifest-path crates/zizmor/Cargo.toml
           manylinux: musllinux_1_2
+          docker-options: -e CARGO
+          before-script-linux: support/install-cargo-auditable.sh
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
