@@ -71,6 +71,7 @@ jobs:
         type=raw,value=latest,enable=${{ inputs.latest }}
       build-args: |
         ZIZMOR_VERSION=${{ inputs.release-version }}
+      sbom: true
       set-meta-labels: true
       set-meta-annotations: true
     secrets:
