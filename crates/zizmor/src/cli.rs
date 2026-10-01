@@ -24,7 +24,7 @@ const STYLES: Styles = Styles::styled()
 
 /// Finds security issues in GitHub Actions setups.
 #[derive(Debug, Parser)]
-#[command(about, version, styles = STYLES)]
+#[command(about, long_version = crate::version::version(), styles = STYLES)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
 #[command(next_display_order = 1)]
 pub(crate) struct App {

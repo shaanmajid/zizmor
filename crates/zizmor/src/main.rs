@@ -47,6 +47,7 @@ mod output;
 mod registry;
 mod state;
 mod utils;
+mod version;
 
 #[cfg(all(
     not(target_family = "windows"),
