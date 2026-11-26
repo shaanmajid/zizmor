@@ -9,6 +9,10 @@ of `zizmor`.
 
 ## Next (UNRELEASED)
 
+### Enhancements 🌱
+
+* The [ref-version-mismatch] audit now supports pre-commit config inputs (#2256)
+
 ## 1.33.1
 
 ### Bug Fixes 🐛

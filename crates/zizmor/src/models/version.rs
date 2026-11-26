@@ -14,7 +14,7 @@ static_regex!(
     \#                                  # start of comment
     \s*                                 # optional whitespace
     (?:                                 # start non-capturing group for version prefix
-      (?:tag|version|ver)\s*[:=]\s*     # version prefix + `:` or `=`
+      (?:tag|version|ver|frozen)\s*[:=]\s* # version prefix + `:` or `=`
     )?                                  # end optional non-capturing group
     (                                   # start capturing group for version
       \S+                               # one or more non-whitespace characters

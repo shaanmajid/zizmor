@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use github_actions_models::common::{RepositoryUses, Uses};
+use github_actions_models::common::Uses;
 use subfeature::Subfeature;
 use yamlpatch::{Op, Patch};
 
@@ -13,7 +13,8 @@ use crate::{
     models::{
         AsDocument, StepCommon,
         action::CompositeStep,
-        uses::RepositoryUsesExt as _,
+        pre_commit,
+        repo_ref::RepoRef,
         version::RawVersion,
         workflow::{ReusableWorkflowCallJob, Step},
     },
@@ -29,6 +30,47 @@ audit_meta!(
     "ref-version-mismatch",
     "action's hash pin has mismatched or missing version comment"
 );
+
+/// The YAML key that holds a pinned ref.
+///
+/// This also determines the style of version comment we produce in fixes.
+#[derive(Clone, Copy)]
+enum RefKey {
+    /// A `uses:` clause in a workflow or action.
+    Uses,
+    /// A `rev:` in a pre-commit config.
+    Rev,
+}
+
+impl RefKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uses => "uses",
+            Self::Rev => "rev",
+        }
+    }
+
+    /// The version comment to add when none is present.
+    ///
+    /// For pre-commit, this matches what `autoupdate --freeze` writes.
+    fn new_comment(self, tag: &str) -> String {
+        match self {
+            Self::Uses => format!("# {tag}"),
+            Self::Rev => format!("# frozen: {tag}"),
+        }
+    }
+
+    /// The version comment to replace a mismatched one with.
+    ///
+    /// For pre-commit, this preserves the existing comment's style
+    /// (e.g. `# frozen: vX` or `# vX`) by replacing only the version.
+    fn updated_comment(self, comment: &str, version: &str, tag: &str) -> String {
+        match (self, comment.strip_suffix(version)) {
+            (Self::Rev, Some(prefix)) => format!("{prefix}{tag}"),
+            _ => self.new_comment(tag),
+        }
+    }
+}
 
 /// The different states that can come from [`RefVersionMismatch::detect_version_comment`].
 #[derive(Debug)]
@@ -65,7 +107,12 @@ impl RefVersionMismatch {
     }
 
     /// Create a Fix for updating the version comment to match the pinned hash
-    fn update_version_comment_fix<'a, 'doc, S>(&self, parent: &'a S, correct_tag: &str) -> Fix<'doc>
+    fn update_version_comment_fix<'a, 'doc, S>(
+        parent: &'a S,
+        key: RefKey,
+        new_comment: String,
+        correct_tag: &str,
+    ) -> Fix<'doc>
     where
         S: Locatable<'doc> + AsDocument<'a, 'doc>,
     {
@@ -74,16 +121,16 @@ impl RefVersionMismatch {
             key: parent.location().key,
             disposition: Default::default(),
             patches: vec![Patch {
-                route: parent.route().with_key("uses"),
+                route: parent.route().with_key(key.as_str()),
                 operation: Op::ReplaceComment {
-                    new: format!("# {correct_tag}").into(),
+                    new: new_comment.into(),
                 },
             }],
         }
     }
 
     /// Create a Fix for adding a version comment where none exists
-    fn add_version_comment_fix<'a, 'doc, S>(parent: &'a S, tag: &str) -> Fix<'doc>
+    fn add_version_comment_fix<'a, 'doc, S>(parent: &'a S, key: RefKey, tag: &str) -> Fix<'doc>
     where
         S: Locatable<'doc> + AsDocument<'a, 'doc>,
     {
@@ -92,30 +139,41 @@ impl RefVersionMismatch {
             key: parent.location().key,
             disposition: Default::default(),
             patches: vec![Patch {
-                route: parent.route().with_key("uses"),
+                route: parent.route().with_key(key.as_str()),
                 operation: Op::EmplaceComment {
-                    new: format!("# {tag}").into(),
+                    new: key.new_comment(tag).into(),
                 },
             }],
         }
     }
 
-    async fn process_uses<'a, 'doc, S>(
+    /// Check a pinned ref against its version comment.
+    ///
+    /// `key` is the YAML key holding the ref within `parent`, and `raw` is
+    /// that key's raw value (used to underline the ref in findings).
+    async fn process_ref<'a, 'doc, S>(
         &self,
-        uses: &'doc RepositoryUses,
+        repo_ref: RepoRef<'doc>,
+        key: RefKey,
+        raw: &'doc str,
         parent: &'a S,
     ) -> Result<Option<Finding<'doc>>, AuditError>
     where
         S: Locatable<'doc> + AsDocument<'a, 'doc>,
     {
-        // Only check steps that have commit refs (not symbolic refs like v1.0.0)
-        let Some(commit_sha) = uses.commit_ref() else {
+        // Only check refs that are commits (not symbolic refs like v1.0.0)
+        let Some(commit_sha) = repo_ref.commit_ref() else {
+            return Ok(None);
+        };
+
+        // We can only look up refs for GitHub repositories.
+        let Some(slug) = repo_ref.slug() else {
             return Ok(None);
         };
 
         let parent_location = parent.location();
         let uses_location = parent_location
-            .with_keys(["uses".into()])
+            .with_keys([key.as_str().into()])
             .concretize(parent.as_document())
             .map_err(Self::err)?;
 
@@ -127,7 +185,7 @@ impl RefVersionMismatch {
                 // SHA-pinned action without a recognized version comment.
                 let Some(tag) = self
                     .client
-                    .longest_tag_for_commit(&uses.into(), uses.subpath(), commit_sha)
+                    .longest_tag_for_commit(&slug, repo_ref.subpath(), commit_sha)
                     .await
                     .map_err(Self::err)?
                 else {
@@ -137,11 +195,14 @@ impl RefVersionMismatch {
                 let (annotation, tip) = match comment_version_state {
                     VersionCommentState::Missing => (
                         "missing version comment",
-                        format!("add version comment '# {}'", tag.name),
+                        format!("add version comment '{}'", key.new_comment(&tag.name)),
                     ),
                     VersionCommentState::NonVersionComments => (
                         "comment does not contain a version",
-                        format!("rewrite comment to include '# {}'", tag.name),
+                        format!(
+                            "rewrite comment to include '{}'",
+                            key.new_comment(&tag.name)
+                        ),
                     ),
                     VersionCommentState::Version { .. } => unreachable!(),
                 };
@@ -155,13 +216,13 @@ impl RefVersionMismatch {
                         uses_location
                             .symbolic
                             .primary()
-                            .subfeature(Subfeature::new(0, uses.raw()))
+                            .subfeature(Subfeature::new(0, raw))
                             .annotated(annotation),
                     )
                     .tip(tip);
 
                 if matches!(comment_version_state, VersionCommentState::Missing) {
-                    builder = builder.fix(Self::add_version_comment_fix(parent, &tag.name));
+                    builder = builder.fix(Self::add_version_comment_fix(parent, key, &tag.name));
                 }
 
                 return Ok(Some(builder.build(parent).map_err(Self::err)?));
@@ -170,7 +231,7 @@ impl RefVersionMismatch {
 
         let git_ref = self
             .client
-            .lookup_ref(&uses.into(), version)
+            .lookup_ref(&slug, version)
             .await
             .map_err(Self::err)?;
 
@@ -218,18 +279,24 @@ impl RefVersionMismatch {
 
         if let Some(suggestion) = self
             .client
-            .longest_tag_for_commit(&uses.into(), uses.subpath(), commit_sha)
+            .longest_tag_for_commit(&slug, repo_ref.subpath(), commit_sha)
             .await
             .map_err(Self::err)?
         {
             builder = builder.add_location(parent_location.hidden()).add_location(
                 uses_location
                     .symbolic
-                    .subfeature(Subfeature::new(0, uses.raw()))
+                    .subfeature(Subfeature::new(0, raw))
                     .annotated(format!("is pointed to by tag {tag}", tag = suggestion.name)),
             );
             // Add auto-fix to update the version comment to match the pinned hash
-            builder = builder.fix(self.update_version_comment_fix(parent, &suggestion.name));
+            let new_comment = key.updated_comment(comment.as_raw(), version, &suggestion.name);
+            builder = builder.fix(Self::update_version_comment_fix(
+                parent,
+                key,
+                new_comment,
+                &suggestion.name,
+            ));
         }
 
         Ok(Some(builder.build(parent).map_err(Self::err)?))
@@ -243,7 +310,8 @@ impl RefVersionMismatch {
             return Ok(None);
         };
 
-        self.process_uses(uses, step).await
+        self.process_ref(uses.into(), RefKey::Uses, uses.raw(), step)
+            .await
     }
 }
 
@@ -301,7 +369,37 @@ impl Audit for RefVersionMismatch {
             return Ok(vec![]);
         };
 
-        Ok(self.process_uses(uses, job).await?.into_iter().collect())
+        Ok(self
+            .process_ref(uses.into(), RefKey::Uses, uses.raw(), job)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
+    async fn audit_pre_commit_config_repo<'doc>(
+        &self,
+        repo: &pre_commit::Repo<'doc>,
+        _group: &crate::registry::input::InputGroup,
+    ) -> Result<Vec<Finding<'doc>>, AuditError> {
+        // `local`, `meta`, etc. have no remote ref to check.
+        let Some(remote) = repo.repo() else {
+            return Ok(vec![]);
+        };
+
+        let repo_ref = RepoRef::from(remote);
+        if repo_ref.commit_ref().is_some() && repo_ref.slug().is_none() {
+            tracing::debug!(
+                "ref-version-mismatch: skipping non-GitHub pre-commit repo {url}",
+                url = remote.repo.as_str()
+            );
+            return Ok(vec![]);
+        }
+
+        Ok(self
+            .process_ref(repo_ref, RefKey::Rev, &remote.rev, repo)
+            .await?
+            .into_iter()
+            .collect())
     }
 }
 

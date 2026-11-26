@@ -1490,7 +1490,7 @@ Switch to hash-pinned actions.
 
 | Type     | Examples                | Introduced in | Works offline  | Auto-fixes available | Configurable |
 |----------|-------------------------|---------------|----------------|--------------------| ---------------|
-| Workflow, Action  | [ref-version-mismatch.yml] | v1.14.0       | ✅             | ⚠️                 | ❌  |
+| Workflow, Action, pre-commit  | [ref-version-mismatch.yml] | v1.14.0       | ✅             | ⚠️                 | ❌  |
 
 [ref-version-mismatch.yml]: https://github.com/zizmorcore/zizmor/blob/main/crates/zizmor/tests/integration/test-data/ref-version-mismatch.yml
 
@@ -1511,6 +1511,14 @@ version is in use.
 Missing version comments are reported only with the pedantic persona. If a
 different inline comment is already present, zizmor reports the finding but
 does not rewrite that comment automatically.
+
+Recognized version comments include `# v1.2.3`, `# tag=v1.2.3`,
+`# version: v1.2.3`, `# ratchet:owner/repo@v1.2.3`, and `# frozen: v1.2.3`.
+
+In pre-commit configurations, this audit checks hash-pinned `#!yaml rev:`
+fields that refer to GitHub repositories; repositories on other hosts are
+skipped. Auto-fixes use the `# frozen: v1.2.3` format written by
+`pre-commit autoupdate --freeze`.
 
 ### Remediation
 
