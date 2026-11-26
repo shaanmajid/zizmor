@@ -1,0 +1,44 @@
+repos:
+  # No finding, comment matches
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+
+  # Finding: comment mismatches
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+
+  # Pedantic finding: missing version comment
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
+    hooks:
+      - id: trailing-whitespace
+
+  # Pedantic finding: non-version comment, no auto-fix
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # some comment
+    hooks:
+      - id: trailing-whitespace
+
+  # No finding, symbolic ref
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+
+  # No finding, not a GitHub repo
+  - repo: https://codeberg.org/fsfe/reuse-tool
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v1.0.0
+    hooks:
+      - id: reuse
+
+  # No finding, local repo
+  - repo: local
+    hooks:
+      - id: foo
+        name: foo
+        entry: foo
+        language: system

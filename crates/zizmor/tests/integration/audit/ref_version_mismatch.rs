@@ -714,3 +714,109 @@ jobs:
 
     Ok(())
 }
+
+#[cfg_attr(not(feature = "gh-token-tests"), ignore)]
+#[test]
+fn test_pre_commit() -> Result<()> {
+    insta::assert_snapshot!(
+        Zizmor::cargo_bin()
+            .offline(NetworkMode::AssertOnline)
+            .args(["--persona=pedantic"])
+            .input(input_under_test(
+                "ref-version-mismatch/pre-commit/.pre-commit-config.yaml"
+            ))
+            .run()?,
+        @"
+    warning[ref-version-mismatch]: action's hash pin has mismatched or missing version comment
+      --> @@INPUT@@:10:62
+       |
+    10 |     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v5.0.0
+       |          ----------------------------------------            ^^^^^^ tag points to commit cef0300fd0fc
+       |          |
+       |          is pointed to by tag v6.0.0
+       |
+       = note: audit confidence → High
+       = note: this finding has an auto-fix
+
+    help[ref-version-mismatch]: action's hash pin has mismatched or missing version comment
+      --> @@INPUT@@:16:10
+       |
+    16 |     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
+       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing version comment
+       |
+       = note: audit confidence → High
+       = tip: add version comment '# frozen: v6.0.0'
+       = note: this finding has an auto-fix
+
+    help[ref-version-mismatch]: action's hash pin has mismatched or missing version comment
+      --> @@INPUT@@:22:10
+       |
+    22 |     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # some comment
+       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment does not contain a version
+       |
+       = note: audit confidence → High
+       = tip: rewrite comment to include '# frozen: v6.0.0'
+
+    3 findings (2 unsafe fixes): 0 informational, 2 low, 1 medium, 0 high
+    "
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "gh-token-tests")]
+#[test]
+fn test_fix_pre_commit() -> anyhow::Result<()> {
+    use zizmor_dev::WorkspaceBuilder;
+
+    let config_content = r#"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v5.0.0
+    hooks:
+      - id: trailing-whitespace
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
+    hooks:
+      - id: trailing-whitespace
+"#;
+
+    let workspace = WorkspaceBuilder::default().is_git_repo(true).build()?;
+    workspace.add_file(".pre-commit-config.yaml", config_content);
+
+    insta::assert_snapshot!(
+        &workspace.diff(".pre-commit-config.yaml", |workspace| {
+            Zizmor::cargo_bin()
+                .args(["--fix=all", "--persona=pedantic"])
+                .offline(NetworkMode::AssertOnline)
+                .input(workspace.path())
+                .run()
+        })?,
+        @"
+    @@ -1,14 +1,14 @@
+     ⏎
+     repos:
+       - repo: https://github.com/pre-commit/pre-commit-hooks
+    -    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v5.0.0
+    +    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+         hooks:
+           - id: trailing-whitespace
+       - repo: https://github.com/pre-commit/pre-commit-hooks
+    -    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v5.0.0
+    +    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+         hooks:
+           - id: trailing-whitespace
+       - repo: https://github.com/pre-commit/pre-commit-hooks
+    -    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
+    +    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+         hooks:
+           - id: trailing-whitespace
+    "
+    );
+
+    Ok(())
+}

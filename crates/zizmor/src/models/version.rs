@@ -210,6 +210,9 @@ mod tests {
             ("# version: v6-beta-2", Some("v6-beta-2")),
             ("# version: v1.0.0-rc-1", Some("v1.0.0-rc-1")),
             ("# ver=1.0.0", Some("1.0.0")),
+            ("# frozen: v0.14.14", Some("v0.14.14")),
+            ("# frozen: 6.0.0", Some("6.0.0")),
+            ("#frozen:v1.2.3", Some("v1.2.3")),
             ("# visit the docs", None),
             ("# some other comment", None),
             ("# zizmor: ignore[ref-version-mismatch]", None),
@@ -228,7 +231,7 @@ mod tests {
                 (Some(caps), None) => {
                     assert!(false, "Got unexpected match: {caps:?}")
                 }
-                (Some(_), Some(_)) => (),
+                (Some(caps), Some(expected)) => assert_eq!(&caps[1], expected),
             }
         }
     }
